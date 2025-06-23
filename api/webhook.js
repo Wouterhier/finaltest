@@ -73,7 +73,7 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-// Full Assistants API logic, NO INSTRUCTIONS in code!
+// Assistants v2 API logic WITH correct header!
 async function getAssistantReply(assistantId, userMessage, senderId, pageId) {
   try {
     // 1. Create new thread for each chat (or use DB for persistent threads per user if needed)
@@ -82,6 +82,7 @@ async function getAssistantReply(assistantId, userMessage, senderId, pageId) {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
       },
     });
     const thread = await threadRes.json();
@@ -94,6 +95,7 @@ async function getAssistantReply(assistantId, userMessage, senderId, pageId) {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
       },
       body: JSON.stringify({
         role: 'user',
@@ -101,7 +103,6 @@ async function getAssistantReply(assistantId, userMessage, senderId, pageId) {
         metadata: {
           senderId,
           pageId,
-          // channel: 'messenger', // add more if needed
         }
       }),
     });
@@ -112,6 +113,7 @@ async function getAssistantReply(assistantId, userMessage, senderId, pageId) {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
+        'OpenAI-Beta': 'assistants=v2'
       },
       body: JSON.stringify({
         assistant_id: assistantId,
@@ -130,6 +132,7 @@ async function getAssistantReply(assistantId, userMessage, senderId, pageId) {
       const statusRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'assistants=v2'
         },
       });
       const statusData = await statusRes.json();
@@ -145,6 +148,7 @@ async function getAssistantReply(assistantId, userMessage, senderId, pageId) {
     const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'assistants=v2'
       },
     });
     const messagesData = await messagesRes.json();
