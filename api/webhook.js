@@ -1,17 +1,20 @@
+import fs from 'fs';
+import path from 'path';
+
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Mapping of Facebook Page IDs to their respective tokens and Assistant IDs
-const pageConfigs = {
-  PAGE_ID_1: {
-    PAGE_ACCESS_TOKEN: 'PAGE_ACCESS_TOKEN_1',
-    ASSISTANT_ID: 'ASSISTANT_ID_1',
-  },
-  PAGE_ID_2: {
-    PAGE_ACCESS_TOKEN: 'PAGE_ACCESS_TOKEN_2',
-    ASSISTANT_ID: 'ASSISTANT_ID_2',
-  },
-};
+// 🔁 Load page-specific config (token + assistant instructions)
+function getPageConfig(pageId) {
+  try {
+    const configPath = path.resolve('./api/pageConfigs.json');
+    const configs = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return configs[pageId] || null;
+  } catch (err) {
+    console.error('❌ Failed to load pageConfigs:', err);
+    return null;
+  }
+}
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
@@ -20,10 +23,10 @@ export default async function handler(req, res) {
     const challenge = req.query['hub.challenge'];
 
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      console.log('✅ WEBHOOK_VERIFIED');
+      console.log('✅ Webhook verified');
       return res.status(200).send(challenge);
     } else {
-      console.error('❌ Verification failed', { mode, token });
+      console.warn('❌ Verification failed', { mode, token });
       return res.status(403).send('Verification failed');
     }
   }
@@ -36,34 +39,36 @@ export default async function handler(req, res) {
         const webhookEvent = entry.messaging?.[0];
         if (!webhookEvent) continue;
 
-        const senderId = webhookEvent.sender.id;
-        const pageId = webhookEvent.recipient.id;
-        const config = pageConfigs[pageId];
+        const senderId = webhookEvent.sender?.id;
+        const pageId = webhookEvent.recipient?.id;
+        const userMessage = webhookEvent.message?.text;
 
-        if (!config) {
-          console.warn('⚠️ Unknown page ID:', pageId);
+        if (!senderId || !pageId || !userMessage) {
+          console.warn('⚠️ Missing fields:', { senderId, pageId, userMessage });
           continue;
         }
 
-        const { PAGE_ACCESS_TOKEN, ASSISTANT_ID } = config;
+        console.log(`📥 Message from ${senderId} to Page ${pageId}: ${userMessage}`);
 
-        if (webhookEvent.message?.text) {
-          const userMessage = webhookEvent.message.text;
-          console.log(`📩 Message from ${senderId} to page ${pageId}: ${userMessage}`);
+        const config = getPageConfig(pageId);
+        if (!config) {
+          console.warn('⚠️ No config found for Page ID:', pageId);
+          continue;
+        }
 
-          try {
-            const replyText = await getChatGptReply(userMessage, ASSISTANT_ID);
-            await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
-          } catch (error) {
-            console.error('🚨 Error processing message:', error);
-          }
-        } else {
-          console.warn('⚠️ Received non-text or unsupported message:', webhookEvent);
+        const { PAGE_ACCESS_TOKEN, ASSISTANT_INSTRUCTIONS } = config;
+
+        try {
+          const replyText = await getChatGptReply(userMessage, ASSISTANT_INSTRUCTIONS);
+          await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
+        } catch (err) {
+          console.error('❌ Error handling message:', err);
         }
       }
+
       return res.status(200).send('EVENT_RECEIVED');
     } else {
-      console.error('❌ Unsupported body object:', body.object);
+      console.warn('❌ Unsupported event object:', body.object);
       return res.sendStatus(404);
     }
   }
@@ -72,9 +77,10 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-async function getChatGptReply(message, assistantId) {
+// 🔧 Ask OpenAI based on dynamic instructions
+async function getChatGptReply(userText, instructions) {
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -83,30 +89,30 @@ async function getChatGptReply(message, assistantId) {
       body: JSON.stringify({
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: `You are assistant ${assistantId}` },
-          { role: 'user', content: message },
+          { role: 'system', content: instructions },
+          { role: 'user', content: userText },
         ],
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ OpenAI API error:', errorText);
-      return 'Sorry, I could not process your message.';
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('❌ OpenAI error:', errText);
+      return 'Sorry, I couldn’t process that.';
     }
 
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || 'Sorry, I could not process your message.';
-  } catch (error) {
-    console.error('❌ OpenAI API fetch error:', error);
-    return 'Sorry, I could not process your message.';
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || 'Sorry, no reply was generated.';
+  } catch (err) {
+    console.error('❌ OpenAI fetch failed:', err);
+    return 'Sorry, something went wrong.';
   }
 }
 
-async function sendFacebookMessage(recipientId, messageText, token) {
+// 🔧 Send reply via Facebook API
+async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) {
   try {
-    const url = `https://graph.facebook.com/v15.0/me/messages?access_token=${token}`;
-    const response = await fetch(url, {
+    const res = await fetch(`https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -115,11 +121,11 @@ async function sendFacebookMessage(recipientId, messageText, token) {
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ Facebook API error:', errorText);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('❌ Facebook API error:', errText);
     }
-  } catch (error) {
-    console.error('❌ Facebook message send error:', error);
+  } catch (err) {
+    console.error('❌ Failed to send FB message:', err);
   }
 }
