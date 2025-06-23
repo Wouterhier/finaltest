@@ -35,16 +35,13 @@ export default async function handler(req, res) {
   if (req.method === 'POST') {
     const body = req.body;
     if (body.object === 'page') {
-      // Respond immediately to Messenger to avoid timeout/loop
+      // Respond to Messenger immediately
       res.status(200).send('EVENT_RECEIVED');
 
-      // Process each message in background (async, fire-and-forget)
+      // Async process all messages
       for (const entry of body.entry) {
         const messagingEvents = entry.messaging || [];
         for (const webhookEvent of messagingEvents) {
-          // LOG RAW EVENT for debug
-          console.log('🟡 RAW EVENT:', JSON.stringify(webhookEvent, null, 2));
-
           const senderId = webhookEvent.sender?.id;
           const pageId = webhookEvent.recipient?.id;
           const userMessage = webhookEvent.message?.text;
@@ -54,8 +51,7 @@ export default async function handler(req, res) {
             continue;
           }
 
-          console.log('🔵 Processing message:', { senderId, pageId, userMessage });
-
+          // Process in background (fire-and-forget)
           (async () => {
             try {
               const config = getPageConfig(pageId);
@@ -63,17 +59,17 @@ export default async function handler(req, res) {
                 console.warn('⚠️ No config for page:', pageId);
                 return;
               }
-              const { PAGE_ACCESS_TOKEN, ASSISTANT_INSTRUCTIONS } = config;
-              const replyText = await getChatGptReply(userMessage, ASSISTANT_INSTRUCTIONS);
+              const { PAGE_ACCESS_TOKEN, ASSISTANT_ID } = config;
+              // Assistant API logic here
+              const replyText = await getAssistantReply(userMessage, ASSISTANT_ID);
               await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
-              console.log('✅ Sent reply to', senderId);
             } catch (err) {
               console.error('❌ Processing error:', err);
             }
           })();
         }
       }
-      return; // Already sent response above
+      return;
     } else {
       return res.sendStatus(404);
     }
@@ -83,32 +79,82 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-// Ask OpenAI (GPT) with instructions (or fallback)
-async function getChatGptReply(userText, instructions) {
+// 🔧 OpenAI Assistants API logic
+async function getAssistantReply(userText, assistantId) {
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    // 1. Create a new thread
+    const threadRes = await fetch('https://api.openai.com/v1/threads', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    const thread = await threadRes.json();
+    const threadId = thread.id;
+
+    // 2. Add the user message to the thread
+    await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o', // or 'gpt-3.5-turbo'
-        messages: [
-          { role: 'system', content: instructions || 'You are a helpful assistant.' },
-          { role: 'user', content: userText },
-        ],
+        role: 'user',
+        content: userText,
       }),
     });
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error('❌ OpenAI error:', errText);
-      return 'Sorry, I could not process your request.';
+
+    // 3. Run the assistant on this thread
+    const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        assistant_id: assistantId,
+      }),
+    });
+    const run = await runRes.json();
+    const runId = run.id;
+
+    // 4. Poll until run is complete (max 20s)
+    let status = 'queued';
+    let waited = 0;
+    let runData = null;
+    while (status !== 'completed' && status !== 'failed' && waited < 20000) {
+      await new Promise(res => setTimeout(res, 1500));
+      waited += 1500;
+      const statusRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+      });
+      runData = await statusRes.json();
+      status = runData.status;
     }
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content || 'Sorry, no reply generated.';
+
+    if (status === 'failed') {
+      console.error('❌ Assistant run failed:', runData);
+      return 'Sorry, something went wrong.';
+    }
+    if (status !== 'completed') {
+      return 'Sorry, I could not process your request in time.';
+    }
+
+    // 5. Fetch messages, return assistant's latest
+    const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+    });
+    const messagesData = await messagesRes.json();
+    const lastMessage = messagesData.data?.find(msg => msg.role === 'assistant');
+    return lastMessage?.content?.[0]?.text?.value || 'Sorry, no reply generated.';
   } catch (err) {
-    console.error('❌ OpenAI fetch failed:', err);
+    console.error('❌ Assistant API error:', err);
     return 'Sorry, something went wrong.';
   }
 }
