@@ -1,7 +1,6 @@
-// File: api/webhook.js
-
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
@@ -22,21 +21,20 @@ export default async function handler(req, res) {
 
     if (body.object === 'page') {
       for (const entry of body.entry) {
-        const event = entry.messaging[0];
-        const senderId = event.sender.id;
-        const messageText = event.message?.text;
+        const webhookEvent = entry.messaging[0];
+        const senderId = webhookEvent.sender.id;
 
-        if (messageText) {
-          console.log(`Received: "${messageText}" from ${senderId}`);
+        if (webhookEvent.message && webhookEvent.message.text) {
+          const userMessage = webhookEvent.message.text;
+          console.log(`Received message from ${senderId}: ${userMessage}`);
 
-          // 🔁 Send to ChatGPT
-          const chatGptReply = await getChatGptReply(messageText);
+          // Call OpenAI API to get the reply
+          const replyText = await getChatGptReply(userMessage);
 
-          // 📤 Send reply back via FB
-          await sendFacebookMessage(senderId, chatGptReply);
+          // Send reply back to user on Messenger
+          await sendFacebookMessage(senderId, replyText);
         }
       }
-
       return res.status(200).send('EVENT_RECEIVED');
     } else {
       return res.sendStatus(404);
@@ -47,30 +45,28 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-async function getChatGptReply(text) {
-  const apiKey = process.env.OPENAI_API_KEY;
-
+async function getChatGptReply(message) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: 'gpt-4o',
+      model: 'gpt-3.5-turbo',
       messages: [
         { role: 'system', content: 'You are a helpful assistant.' },
-        { role: 'user', content: text },
+        { role: 'user', content: message },
       ],
     }),
   });
 
   const data = await response.json();
-  return data.choices[0].message.content;
+  return data.choices?.[0]?.message?.content || 'Sorry, I could not process your message.';
 }
 
 async function sendFacebookMessage(recipientId, messageText) {
-  const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
+  const url = `https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 
   await fetch(url, {
     method: 'POST',
