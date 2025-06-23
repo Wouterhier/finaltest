@@ -35,13 +35,16 @@ export default async function handler(req, res) {
   if (req.method === 'POST') {
     const body = req.body;
     if (body.object === 'page') {
-      // Respond to Messenger **immediately** to prevent timeout/loops
+      // Respond immediately to Messenger to avoid timeout/loop
       res.status(200).send('EVENT_RECEIVED');
 
-      // Process each message in the background (async)
+      // Process each message in background (async, fire-and-forget)
       for (const entry of body.entry) {
         const messagingEvents = entry.messaging || [];
         for (const webhookEvent of messagingEvents) {
+          // LOG RAW EVENT for debug
+          console.log('🟡 RAW EVENT:', JSON.stringify(webhookEvent, null, 2));
+
           const senderId = webhookEvent.sender?.id;
           const pageId = webhookEvent.recipient?.id;
           const userMessage = webhookEvent.message?.text;
@@ -51,7 +54,8 @@ export default async function handler(req, res) {
             continue;
           }
 
-          // Process message in the background (fire-and-forget)
+          console.log('🔵 Processing message:', { senderId, pageId, userMessage });
+
           (async () => {
             try {
               const config = getPageConfig(pageId);
@@ -60,16 +64,16 @@ export default async function handler(req, res) {
                 return;
               }
               const { PAGE_ACCESS_TOKEN, ASSISTANT_INSTRUCTIONS } = config;
-              // Call OpenAI and send FB reply
               const replyText = await getChatGptReply(userMessage, ASSISTANT_INSTRUCTIONS);
               await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
+              console.log('✅ Sent reply to', senderId);
             } catch (err) {
               console.error('❌ Processing error:', err);
             }
           })();
         }
       }
-      return; // already sent response above
+      return; // Already sent response above
     } else {
       return res.sendStatus(404);
     }
@@ -79,7 +83,7 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-// Ask OpenAI (GPT) with instructions (use your logic for ASSISTANT_ID if needed)
+// Ask OpenAI (GPT) with instructions (or fallback)
 async function getChatGptReply(userText, instructions) {
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
