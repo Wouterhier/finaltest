@@ -2,6 +2,12 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
+// Step 1: User-Assistant Mapping
+const userAssistantMapping = {
+  'messenger_user_id_1': 'assistant_id_1',
+  'messenger_user_id_2': 'assistant_id_2'
+};
+
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'];
