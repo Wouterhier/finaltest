@@ -1,4 +1,4 @@
-// File: /api/webhook.js
+// File: api/webhook.js
 
 export default function handler(req, res) {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -8,20 +8,16 @@ export default function handler(req, res) {
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    if (mode && token) {
-      if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-        console.log('✅ Webhook verified');
-        res.status(200).send(challenge);
-      } else {
-        res.status(403).send('❌ Forbidden: token mismatch');
-      }
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      console.log('WEBHOOK_VERIFIED');
+      res.status(200).send(challenge);
     } else {
-      res.status(400).send('❌ Bad Request: missing query');
+      res.status(403).send('Verification failed');
     }
   } else if (req.method === 'POST') {
-    console.log('📩 Received webhook event:', req.body);
+    console.log('Received webhook POST:', JSON.stringify(req.body, null, 2));
     res.status(200).send('EVENT_RECEIVED');
   } else {
-    res.status(405).send({ error: 'Method not allowed' });
+    res.status(405).json({ error: 'Method not allowed' });
   }
 }
