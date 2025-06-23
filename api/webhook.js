@@ -4,7 +4,7 @@ import path from 'path';
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// 🔁 Load page-specific config (token + assistant instructions)
+// 🔁 Load page-specific config (token + assistant mapping)
 function getPageConfig(pageId) {
   try {
     const configPath = path.resolve('./api/pageConfigs.json');
@@ -56,10 +56,10 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const { PAGE_ACCESS_TOKEN, ASSISTANT_INSTRUCTIONS } = config;
+        const { PAGE_ACCESS_TOKEN, ASSISTANT_ID } = config;
 
         try {
-          const replyText = await getChatGptReply(userMessage, ASSISTANT_INSTRUCTIONS);
+          const replyText = await queryAssistant(ASSISTANT_ID, userMessage);
           await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
         } catch (err) {
           console.error('❌ Error handling message:', err);
@@ -77,39 +77,82 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-// 🔧 Ask OpenAI based on dynamic instructions
-async function getChatGptReply(userText, instructions) {
+// 🔧 Query OpenAI Assistant API
+async function queryAssistant(assistantId, userMessage) {
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    const threadRes = await fetch('https://api.openai.com/v1/threads', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const thread = await threadRes.json();
+    const threadId = thread.id;
+
+    await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: instructions },
-          { role: 'user', content: userText },
-        ],
+        role: 'user',
+        content: userMessage,
       }),
     });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error('❌ OpenAI error:', errText);
-      return 'Sorry, I couldn’t process that.';
+    const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        assistant_id: assistantId,
+      }),
+    });
+
+    const run = await runRes.json();
+    const runId = run.id;
+
+    // Poll until run is complete
+    let status = 'queued';
+    let finalRun;
+    while (status !== 'completed' && status !== 'failed') {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const statusRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+      });
+      finalRun = await statusRes.json();
+      status = finalRun.status;
     }
 
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content || 'Sorry, no reply was generated.';
+    if (status === 'failed') {
+      console.error('❌ Assistant run failed:', finalRun);
+      return 'Sorry, something went wrong.';
+    }
+
+    const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+    });
+
+    const messagesData = await messagesRes.json();
+    const lastMessage = messagesData.data?.find(msg => msg.role === 'assistant');
+
+    return lastMessage?.content?.[0]?.text?.value || 'Sorry, no reply generated.';
   } catch (err) {
-    console.error('❌ OpenAI fetch failed:', err);
-    return 'Sorry, something went wrong.';
+    console.error('❌ Assistant API error:', err);
+    return 'Sorry, there was an issue.';
   }
 }
 
-// 🔧 Send reply via Facebook API
+// 🔧 Send message back via Facebook
 async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) {
   try {
     const res = await fetch(`https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
