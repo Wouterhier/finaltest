@@ -41,10 +41,11 @@ export default async function handler(req, res) {
 
         const senderId = webhookEvent.sender?.id;
         const pageId = webhookEvent.recipient?.id;
-        const userMessage = webhookEvent.message?.text;
+        const userMessageRaw = webhookEvent.message?.text;
+        const userMessage = typeof userMessageRaw === 'string' ? userMessageRaw.trim() : null;
 
         if (!senderId || !pageId || !userMessage) {
-          console.warn('⚠️ Missing fields:', { senderId, pageId, userMessage });
+          console.warn('⚠️ Missing or invalid fields:', { senderId, pageId, userMessage });
           continue;
         }
 
@@ -112,14 +113,17 @@ async function getChatGptReply(userText, instructions) {
 // 🔧 Facebook reply
 async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) {
   try {
-    const res = await fetch(`https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        message: { text: messageText },
-      }),
-    });
+    const res = await fetch(
+      `https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipient: { id: recipientId },
+          message: { text: messageText },
+        }),
+      }
+    );
 
     if (!res.ok) {
       const errText = await res.text();
