@@ -1,0 +1,10 @@
+{
+  "123456789012345": {
+    "PAGE_ACCESS_TOKEN": "EAAB...REAL_PAGE_TOKEN_1",
+    "ASSISTANT_INSTRUCTIONS": "You are a chatbot for a skincare clinic. Be warm and helpful."
+  },
+  "987654321098765": {
+    "PAGE_ACCESS_TOKEN": "EAAB...REAL_PAGE_TOKEN_2",
+    "ASSISTANT_INSTRUCTIONS": "You are a chatbot for a law firm. Answer professionally and precisely."
+  }
+}
