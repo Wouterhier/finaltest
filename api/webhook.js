@@ -4,7 +4,7 @@ import path from 'path';
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// 🔁 Load page-specific config (token + assistant mapping)
+// 🔁 Load page-specific config (token + assistant ID)
 function getPageConfig(pageId) {
   try {
     const configPath = path.resolve('./api/pageConfigs.json');
@@ -58,14 +58,13 @@ export default async function handler(req, res) {
 
         const { PAGE_ACCESS_TOKEN, ASSISTANT_ID } = config;
 
-        try {
-          const replyText = await queryAssistant(ASSISTANT_ID, userMessage);
-          await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
-        } catch (err) {
-          console.error('❌ Error handling message:', err);
-        }
+        // 🔁 Run assistant logic in background (non-blocking)
+        queryAssistant(ASSISTANT_ID, userMessage)
+          .then(replyText => sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN))
+          .catch(err => console.error('❌ Async error:', err));
       }
 
+      // ✅ Respond immediately to Facebook to prevent timeout
       return res.status(200).send('EVENT_RECEIVED');
     } else {
       console.warn('❌ Unsupported event object:', body.object);
@@ -80,6 +79,7 @@ export default async function handler(req, res) {
 // 🔧 Query OpenAI Assistant API
 async function queryAssistant(assistantId, userMessage) {
   try {
+    // Step 1: Create thread
     const threadRes = await fetch('https://api.openai.com/v1/threads', {
       method: 'POST',
       headers: {
@@ -87,10 +87,10 @@ async function queryAssistant(assistantId, userMessage) {
         'Content-Type': 'application/json',
       },
     });
-
     const thread = await threadRes.json();
     const threadId = thread.id;
 
+    // Step 2: Post user message to thread
     await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       method: 'POST',
       headers: {
@@ -103,6 +103,7 @@ async function queryAssistant(assistantId, userMessage) {
       }),
     });
 
+    // Step 3: Run assistant
     const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
       method: 'POST',
       headers: {
@@ -117,7 +118,7 @@ async function queryAssistant(assistantId, userMessage) {
     const run = await runRes.json();
     const runId = run.id;
 
-    // Poll until run is complete
+    // Step 4: Poll until complete
     let status = 'queued';
     let finalRun;
     while (status !== 'completed' && status !== 'failed') {
@@ -136,6 +137,7 @@ async function queryAssistant(assistantId, userMessage) {
       return 'Sorry, something went wrong.';
     }
 
+    // Step 5: Get final assistant reply
     const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -152,7 +154,7 @@ async function queryAssistant(assistantId, userMessage) {
   }
 }
 
-// 🔧 Send message back via Facebook
+// 🔧 Send reply via Facebook API
 async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) {
   try {
     const res = await fetch(`https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
