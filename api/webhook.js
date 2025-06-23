@@ -1,10 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import OpenAI from 'openai';
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// 🔁 Load page-specific config (token + assistant ID)
+// 🔁 Load page-specific config (token + assistant mapping)
 function getPageConfig(pageId) {
   try {
     const configPath = path.resolve('./api/pageConfigs.json');
@@ -58,13 +60,14 @@ export default async function handler(req, res) {
 
         const { PAGE_ACCESS_TOKEN, ASSISTANT_ID } = config;
 
-        // 🔁 Run assistant logic in background (non-blocking)
-        queryAssistant(ASSISTANT_ID, userMessage)
-          .then(replyText => sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN))
-          .catch(err => console.error('❌ Async error:', err));
+        try {
+          const replyText = await queryAssistant(ASSISTANT_ID, userMessage);
+          await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
+        } catch (err) {
+          console.error('❌ Error handling message:', err);
+        }
       }
 
-      // ✅ Respond immediately to Facebook to prevent timeout
       return res.status(200).send('EVENT_RECEIVED');
     } else {
       console.warn('❌ Unsupported event object:', body.object);
@@ -76,59 +79,26 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-// 🔧 Query OpenAI Assistant API
+// 🔧 Query OpenAI Assistant using SDK
 async function queryAssistant(assistantId, userMessage) {
   try {
-    // Step 1: Create thread
-    const threadRes = await fetch('https://api.openai.com/v1/threads', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    const thread = await threadRes.json();
-    const threadId = thread.id;
+    const thread = await openai.beta.threads.create();
 
-    // Step 2: Post user message to thread
-    await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        role: 'user',
-        content: userMessage,
-      }),
+    await openai.beta.threads.messages.create(thread.id, {
+      role: 'user',
+      content: userMessage,
     });
 
-    // Step 3: Run assistant
-    const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        assistant_id: assistantId,
-      }),
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: assistantId,
     });
 
-    const run = await runRes.json();
-    const runId = run.id;
+    let status = run.status;
+    let finalRun = run;
 
-    // Step 4: Poll until complete
-    let status = 'queued';
-    let finalRun;
     while (status !== 'completed' && status !== 'failed') {
       await new Promise(resolve => setTimeout(resolve, 1000));
-      const statusRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-        },
-      });
-      finalRun = await statusRes.json();
+      finalRun = await openai.beta.threads.runs.retrieve(thread.id, run.id);
       status = finalRun.status;
     }
 
@@ -137,24 +107,17 @@ async function queryAssistant(assistantId, userMessage) {
       return 'Sorry, something went wrong.';
     }
 
-    // Step 5: Get final assistant reply
-    const messagesRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-    });
-
-    const messagesData = await messagesRes.json();
-    const lastMessage = messagesData.data?.find(msg => msg.role === 'assistant');
+    const messages = await openai.beta.threads.messages.list(thread.id);
+    const lastMessage = messages.data.find(m => m.role === 'assistant');
 
     return lastMessage?.content?.[0]?.text?.value || 'Sorry, no reply generated.';
   } catch (err) {
-    console.error('❌ Assistant API error:', err);
-    return 'Sorry, there was an issue.';
+    console.error('❌ OpenAI SDK error:', err);
+    return 'Sorry, there was a problem connecting to the assistant.';
   }
 }
 
-// 🔧 Send reply via Facebook API
+// 🔧 Send message back via Facebook
 async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) {
   try {
     const res = await fetch(`https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
