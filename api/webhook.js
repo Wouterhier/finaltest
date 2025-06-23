@@ -16,7 +16,6 @@ function getPageConfig(pageId) {
   }
 }
 
-// Main handler
 export default async function handler(req, res) {
   // Messenger webhook verification
   if (req.method === 'GET') {
@@ -34,9 +33,10 @@ export default async function handler(req, res) {
   // Messenger message handler
   if (req.method === 'POST') {
     const body = req.body;
-    console.log('🟣 RAW POST BODY:', JSON.stringify(body, null, 2));
     if (body.object === 'page') {
+      // Respond to Messenger immediately to prevent timeout/loops
       res.status(200).send('EVENT_RECEIVED');
+
       for (const entry of body.entry) {
         const messagingEvents = entry.messaging || [];
         for (const webhookEvent of messagingEvents) {
@@ -50,23 +50,27 @@ export default async function handler(req, res) {
             continue;
           }
 
-          console.log('🔵 Processing message:', { senderId, pageId, userMessage });
-
           // Process message in the background (fire-and-forget)
           (async () => {
             try {
+              console.log('🔵 Processing message:', { senderId, pageId, userMessage });
+
               const config = getPageConfig(pageId);
               if (!config) {
                 console.warn('⚠️ No config for page:', pageId);
                 return;
               }
-              const { PAGE_ACCESS_TOKEN, ASSISTANT_ID } = config;
+              const { PAGE_ACCESS_TOKEN, ASSISTANT_INSTRUCTIONS } = config;
+              console.log('🔑 [Config] PAGE_ACCESS_TOKEN:', PAGE_ACCESS_TOKEN?.slice(0, 8) + '...');
+              console.log('🔑 [Config] ASSISTANT_INSTRUCTIONS:', ASSISTANT_INSTRUCTIONS);
 
-              const replyText = await getAssistantReply(userMessage, ASSISTANT_ID);
-              console.log('🟢 Assistant Reply:', replyText);
+              const replyText = await getChatGptReply(userMessage, ASSISTANT_INSTRUCTIONS);
+              console.log('🟢 [OpenAI] Got reply:', replyText);
+
               await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
+              console.log('🟢 [Facebook] Sent message');
             } catch (err) {
-              console.error('❌ Processing error:', err);
+              console.error('❌ [Webhook] Processing error:', err);
             }
           })();
         }
@@ -81,92 +85,42 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-// -- OpenAI Assistant Integration with Debug Logs --
-async function getAssistantReply(userMessage, assistantId) {
+// Ask OpenAI (GPT) with system instructions
+async function getChatGptReply(userText, instructions) {
   try {
-    // 1. Create thread
-    const threadRes = await fetch('https://api.openai.com/v1/threads', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    const threadData = await threadRes.json();
-    const threadId = threadData.id;
-    console.log('🟡 [Assistant] threadId:', threadId);
-
-    // 2. Add message to thread
-    const msgRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+    console.log('🟢 [OpenAI] getChatGptReply called with:', { userText, instructions });
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        role: 'user',
-        content: userMessage,
+        model: 'gpt-4o', // or 'gpt-3.5-turbo'
+        messages: [
+          { role: 'system', content: instructions || 'You are a helpful assistant.' },
+          { role: 'user', content: userText },
+        ],
       }),
     });
-    const msgData = await msgRes.json();
-    console.log('🟡 [Assistant] msgData:', msgData);
-
-    // 3. Run assistant on thread
-    const runRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        assistant_id: assistantId,
-      }),
-    });
-    const runData = await runRes.json();
-    const runId = runData.id;
-    console.log('🟡 [Assistant] runId:', runId, '| runData:', runData);
-
-    // 4. Poll for completion
-    let status = runData.status;
-    let pollCount = 0;
-    while (status !== 'completed' && status !== 'failed' && pollCount < 30) {
-      await new Promise(res => setTimeout(res, 1500));
-      const pollRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-        },
-      });
-      const pollData = await pollRes.json();
-      status = pollData.status;
-      pollCount++;
-      console.log('🟡 [Assistant] Poll', pollCount, 'status:', status);
-    }
-
-    if (status !== 'completed') {
-      console.error('❌ [Assistant] Run did not complete:', status);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('❌ [OpenAI] API error:', errText);
       return 'Sorry, I could not process your request.';
     }
-
-    // 5. Fetch messages from thread
-    const finalMsgsRes = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-    });
-    const finalMsgsData = await finalMsgsRes.json();
-    const lastMessage = finalMsgsData.data?.find(msg => msg.role === 'assistant');
-    console.log('🟡 [Assistant] lastMessage:', lastMessage);
-
-    return lastMessage?.content?.[0]?.text?.value || 'Sorry, no reply generated.';
+    const data = await res.json();
+    console.log('🟢 [OpenAI] API response:', data);
+    return data.choices?.[0]?.message?.content || 'Sorry, no reply generated.';
   } catch (err) {
-    console.error('❌ [Assistant] API error:', err);
+    console.error('❌ [OpenAI] fetch failed:', err);
     return 'Sorry, something went wrong.';
   }
 }
 
-// -- Facebook send with Debug Logs --
+// Send reply via Facebook Messenger API
 async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) {
   try {
+    console.log('🟢 [Facebook] Sending message:', { recipientId, messageText, PAGE_ACCESS_TOKEN: PAGE_ACCESS_TOKEN?.slice(0, 8) + '...' });
     const res = await fetch(`https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -175,13 +129,11 @@ async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) 
         message: { text: messageText },
       }),
     });
-    const fbResult = await res.text();
     if (!res.ok) {
-      console.error('❌ Facebook API error:', fbResult);
-    } else {
-      console.log('🟢 Facebook send OK:', fbResult);
+      const errText = await res.text();
+      console.error('❌ [Facebook] API error:', errText);
     }
   } catch (err) {
-    console.error('❌ Failed to send FB message:', err);
+    console.error('❌ [Facebook] Failed to send message:', err);
   }
 }
