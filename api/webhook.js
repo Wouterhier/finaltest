@@ -2,16 +2,23 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Step 1: User-Assistant Mapping
+// User-Assistant Mapping
 const userAssistantMapping = {
   'messenger_user_id_1': 'assistant_id_1',
   'messenger_user_id_2': 'assistant_id_2'
 };
 
-// Step 2: Helper function to get Assistant ID based on Messenger User ID
+// Helper function to get Assistant ID based on Messenger User ID
 function getAssistantForUser(senderId) {
   return userAssistantMapping[senderId] || 'default_assistant';
 }
+
+// Assistant instructions management
+const assistantInstructions = {
+  'default_assistant': 'You are a helpful general assistant.',
+  'assistant_id_1': 'You are an assistant specialized in sales and CRM automation.',
+  'assistant_id_2': 'You help users set appointments.',
+};
 
 export default async function handler(req, res) {
   if (req.method === 'GET') {
@@ -41,7 +48,10 @@ export default async function handler(req, res) {
           console.log(`Received message from ${senderId}: ${userMessage}`);
 
           try {
-            const replyText = await getChatGptReply(userMessage);
+            const assistantId = getAssistantForUser(senderId);
+            const systemMessage = assistantInstructions[assistantId] || assistantInstructions['default_assistant'];
+
+            const replyText = await getChatGptReply(userMessage, systemMessage);
             await sendFacebookMessage(senderId, replyText);
           } catch (error) {
             console.error('Error processing message:', error);
@@ -61,7 +71,7 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-async function getChatGptReply(message) {
+async function getChatGptReply(message, systemMessage) {
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -72,7 +82,7 @@ async function getChatGptReply(message) {
       body: JSON.stringify({
         model: 'gpt-3.5-turbo',
         messages: [
-          { role: 'system', content: 'You are a helpful assistant.' },
+          { role: 'system', content: systemMessage },
           { role: 'user', content: message },
         ],
       }),
