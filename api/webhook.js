@@ -10,19 +10,18 @@ export default function handler(req, res) {
 
     if (mode && token) {
       if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-        console.log('Webhook verified successfully.');
+        console.log('✅ Webhook verified');
         res.status(200).send(challenge);
       } else {
-        console.warn('Verification failed. Tokens do not match.');
-        res.status(403).send('Forbidden: tokens do not match');
+        res.status(403).send('❌ Forbidden: token mismatch');
       }
     } else {
-      res.status(400).send('Bad Request');
+      res.status(400).send('❌ Bad Request: missing query');
     }
-  }
-
-  if (req.method === 'POST') {
-    console.log('Webhook POST received:', JSON.stringify(req.body, null, 2));
+  } else if (req.method === 'POST') {
+    console.log('📩 Received webhook event:', req.body);
     res.status(200).send('EVENT_RECEIVED');
+  } else {
+    res.status(405).send({ error: 'Method not allowed' });
   }
 }
