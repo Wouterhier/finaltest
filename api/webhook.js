@@ -1,12 +1,10 @@
 import fs from 'fs';
 import path from 'path';
-import OpenAI from 'openai';
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || '123test';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// 🔁 Load page-specific config (token + assistant mapping)
+// 🔁 Load page-specific config (token + instructions)
 function getPageConfig(pageId) {
   try {
     const configPath = path.resolve('./api/pageConfigs.json');
@@ -58,10 +56,10 @@ export default async function handler(req, res) {
           continue;
         }
 
-        const { PAGE_ACCESS_TOKEN, ASSISTANT_ID } = config;
+        const { PAGE_ACCESS_TOKEN, ASSISTANT_INSTRUCTIONS } = config;
 
         try {
-          const replyText = await queryAssistant(ASSISTANT_ID, userMessage);
+          const replyText = await getChatGptReply(userMessage, ASSISTANT_INSTRUCTIONS);
           await sendFacebookMessage(senderId, replyText, PAGE_ACCESS_TOKEN);
         } catch (err) {
           console.error('❌ Error handling message:', err);
@@ -79,45 +77,39 @@ export default async function handler(req, res) {
   res.status(405).end(`Method ${req.method} Not Allowed`);
 }
 
-// 🔧 Query OpenAI Assistant using SDK
-async function queryAssistant(assistantId, userMessage) {
+// 🔧 Ask OpenAI with system prompt
+async function getChatGptReply(userText, instructions) {
   try {
-    const thread = await openai.beta.threads.create();
-
-    await openai.beta.threads.messages.create(thread.id, {
-      role: 'user',
-      content: userMessage,
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: instructions },
+          { role: 'user', content: userText },
+        ],
+      }),
     });
 
-    const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: assistantId,
-    });
-
-    let status = run.status;
-    let finalRun = run;
-
-    while (status !== 'completed' && status !== 'failed') {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      finalRun = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-      status = finalRun.status;
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('❌ OpenAI error:', errText);
+      return 'Sorry, I couldn’t process that.';
     }
 
-    if (status === 'failed') {
-      console.error('❌ Assistant run failed:', finalRun);
-      return 'Sorry, something went wrong.';
-    }
-
-    const messages = await openai.beta.threads.messages.list(thread.id);
-    const lastMessage = messages.data.find(m => m.role === 'assistant');
-
-    return lastMessage?.content?.[0]?.text?.value || 'Sorry, no reply generated.';
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content || 'Sorry, no reply was generated.';
   } catch (err) {
-    console.error('❌ OpenAI SDK error:', err);
-    return 'Sorry, there was a problem connecting to the assistant.';
+    console.error('❌ OpenAI fetch failed:', err);
+    return 'Sorry, something went wrong.';
   }
 }
 
-// 🔧 Send message back via Facebook
+// 🔧 Facebook reply
 async function sendFacebookMessage(recipientId, messageText, PAGE_ACCESS_TOKEN) {
   try {
     const res = await fetch(`https://graph.facebook.com/v15.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
