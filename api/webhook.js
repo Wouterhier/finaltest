@@ -1,9 +1,10 @@
 // /api/webhook.js
 
 export default async function handler(req, res) {
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
   // Handle GET (for Meta webhook verification)
   if (req.method === 'GET') {
-    const VERIFY_TOKEN = '1'; // Must match what you enter in Meta
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
@@ -24,7 +25,6 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Missing message in request body' });
       }
 
-      // Call OpenAI (example logic)
       const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -48,6 +48,6 @@ export default async function handler(req, res) {
     }
   }
 
-  // Fallback
+  // Fallback for unsupported methods
   return res.status(405).json({ error: 'Method not allowed' });
 }
