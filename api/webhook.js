@@ -8,6 +8,11 @@ const userAssistantMapping = {
   'messenger_user_id_2': 'assistant_id_2'
 };
 
+// Step 2: Helper function to get Assistant ID based on Messenger User ID
+function getAssistantForUser(senderId) {
+  return userAssistantMapping[senderId] || 'default_assistant';
+}
+
 export default async function handler(req, res) {
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'];
